@@ -1,0 +1,118 @@
+---
+title: "Replication Project"
+format: html
+author: Elise Donaho
+editor: visual
+---
+
+## Load in Data
+
+```{r, message=FALSE}
+library(tidyverse) #hi
+library(haven)
+library(knitr)
+everglades <- read_dta("LCM_4classes_data.dta")
+```
+
+## Histogram of Aggregate NEP Scores
+
+```{r}
+everglades |>
+ # group_by(respondentid) |> 
+  #summarize(
+ # mean_nep = mean(nep)
+ # ) |> 
+  ggplot(mapping = aes(x = nep)) +
+  geom_histogram(fill = "grey80", color = "black", bins = 21) +
+  theme_bw() +
+  labs(
+    x = "NEP score",
+    y = "Number of Respondents"
+  )
+```
+
+# Summary Statistics
+
+```{r}
+everglades |> 
+  summarize(
+    Respondents = n_distinct(respondentid),
+    "Choice Sets" = n_distinct(groupid),
+    Alternatives = n(),
+    "Alternatives Per Set" = Alternatives / `Choice Sets`,
+    "Chosen Options" = sum(choice)
+  ) |> 
+  pivot_longer(cols = everything(),
+               names_to = "Variable") |> 
+  rename(
+    "Number of Observations" = "value"
+  )
+
+```
+
+```{r}
+everglades %>%
+  group_by(option) %>%
+  summarise(
+    n = n(),
+    chosen = sum(choice),
+    choice_share = mean(choice)
+  )
+```
+
+```{r}
+everglades %>%
+  group_by(groupid) %>%
+  summarise(
+    n_alternatives = n(),
+    n_chosen = sum(choice),
+    .groups = "drop"
+  ) %>%
+  count(n_alternatives, n_chosen)
+```
+
+```{r}
+respondents <- everglades %>%
+  distinct(
+    respondentid,
+    female, age, income, education, college, race, spanish,
+    nep, nocost, difficultchoice, nogovt, nopay, politics
+  )
+
+respondents
+
+respondents %>%
+  summarise(
+    n = n(),
+    female_mean = mean(female, na.rm = TRUE),
+    age_mean = mean(age, na.rm = TRUE),
+    age_sd = sd(age, na.rm = TRUE),
+    income_mean = mean(income, na.rm = TRUE),
+    college_share = mean(college, na.rm = TRUE),
+    nep_mean = mean(nep, na.rm = TRUE),
+    nep_sd = sd(nep, na.rm = TRUE),
+    difficult_choice_share = mean(difficultchoice, na.rm = TRUE),
+    no_pay_share = mean(nopay, na.rm = TRUE)
+  )
+
+respondents %>%
+  select(
+    female, age, income, college, race, spanish,
+    nep, nocost, difficultchoice, nogovt, nopay, politics
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Value",
+    names_repair = "minimal"
+  ) |> 
+  group_by(Variable) %>%
+  summarise(
+    `Mean / Share` = mean(Value, na.rm = TRUE),
+    SD             = sd(Value, na.rm = TRUE),
+    Min            = min(Value, na.rm = TRUE),
+    Max            = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```

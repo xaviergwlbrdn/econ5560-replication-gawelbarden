@@ -1,0 +1,215 @@
+---
+title: "regression_model"
+format: html
+editor: visual
+---
+
+## Load in Data
+
+```{r, message=FALSE}
+library(tidyverse)
+library(haven)
+library(knitr)
+library(survival)
+library(mlogit)
+everglades <- read_dta("LCM_4classes_data.dta")
+
+set.seed(420)
+```
+
+## Fit the Conditional Logit Model
+
+```{r}
+
+everglades <- everglades |>
+  mutate(
+    black = as.integer(race == 2),
+    other_race = as.integer(!race %in% c(1, 2)),
+    hispanic = spanish
+  )
+
+attrs <- c(
+  "bird10e2", "bird50e2", "bird75e2",
+  "gator10e2", "gator50e2", "gator75e2",
+  "snail10e2", "snail50e2", "snail75e2",
+  "trout10e2", "trout50e2", "trout75e2",
+  "water10e2", "water50e2", "water75e2"
+)
+```
+
+```{r}
+table(everglades$bird10e2, everglades$cdum)
+
+table(everglades$bird10e1, everglades$cdum)
+
+# this confirms that option c is coded as a negative, we need to recode this to fit the model
+```
+
+```{r}
+recode_everglades <- everglades |>
+  mutate(across(
+    matches("^(bird|gator|snail|trout|water)(10|50|75)e2$"),
+    ~ as.integer(.x == 1),
+    .names = "{sub('e2$', '', .col)}"
+  ))
+
+table(everglades$gator10e2, everglades$option)
+
+with(everglades, table(cdum,option))
+```
+
+```{r}
+everglades_mlogit <- mlogit.data(
+  data    = recode_everglades,
+  choice  = "choice",
+  shape   = "long",
+  chid.var = "groupid",
+  alt.var  = "option",
+  id.var   = "respondentid"
+)
+
+
+clogit_model <- mlogit(
+  choice ~ cdum +
+    bird10 + bird50 + bird75 +
+    gator10 + gator50 + gator75 +
+    snail10 + snail50 + snail75 +
+    trout10 + trout50 + trout75 +
+    water10 + water50 + water75 +
+    cost | 0,
+  data = everglades_mlogit
+)
+summary(clogit_model)
+```
+
+Nicely Output Results
+
+```{r}
+s  <- summary(clogit_model)
+ct <- s$CoefTable
+b_cost <- coef(clogit_model)["cost"]
+
+b <- coef(clogit_model)
+attrs <- setdiff(names(b), c("cdum", "cost"))
+round(-b[attrs] / b["cost"], 2)
+
+# Paper's significance star usage: *** 1%, ** 5%, * 10%
+stars <- function(p) case_when(p < 0.01 ~ "***",
+                               p < 0.05 ~ "**",
+                               p < 0.10 ~ "*",
+                               TRUE     ~ "")
+
+wtp_table <- tibble(
+  Variable    = rownames(ct),
+  Coefficient = paste0(formatC(ct[, "Estimate"], format = "f", digits = 3),
+                       stars(ct[, "Pr(>|z|)"])),
+  `Std. Error` = formatC(ct[, "Std. Error"], format = "f", digits = 3),
+  WTP = ifelse(Variable %in% c("cdum", "cost"),
+               "",
+               paste0("$", formatC(-ct[, "Estimate"] / b_cost,
+                                   format = "f", digits = 2)))
+) |>
+  mutate(Variable = recode(Variable, cdum = "optout"))
+
+# summary rows
+ll     <- as.numeric(logLik(clogit_model))
+n_rows <- nrow(everglades_mlogit)
+n_ch   <- n_rows / 3                      # choice occasions (12,599)
+ll0    <- n_ch * log(1/3)                 # null model: equal shares
+lr     <- 2 * (ll - ll0)
+df     <- length(coef(clogit_model))     # 17, as in the paper
+pval   <- pchisq(lr, df = df, lower.tail = FALSE)
+r2     <- 1 - ll / ll0                    
+
+stat_rows <- tibble(
+  Variable     = c("Log Likelihood", "N", paste0("LR chi2(", df, ")"),
+                   "Prob>chi2", "Pseudo R2"),
+  Coefficient  = c(formatC(ll,   format = "f", digits = 3, big.mark = ","),
+                   formatC(n_rows, format = "d", big.mark = ","),
+                   formatC(lr,   format = "f", digits = 2, big.mark = ","),
+                   formatC(pval, format = "f", digits = 4),
+                   formatC(r2,   format = "f", digits = 4)),
+  `Std. Error` = "",
+  WTP          = ""
+)
+
+final_table <- bind_rows(wtp_table, stat_rows)
+knitr::kable(final_table, align = c("l", "r", "r", "r"))
+
+```
+
+## Random Parameter Logit Model in the WTP space
+
+needs a different package
+
+``` R
+{r}
+#| eval: false
+b   <- coef(rpl)
+lam <- exp(b["negcost"])                      # median cost coefficient (~0.0125)
+
+# names and order that logitr expects (works even from the failed fit)
+nm <- names(coef(wtp_fit))
+
+sv <- setNames(rep(NA_real_, length(nm)), nm)
+sv[pars]                  <- b[pars] / lam              # WTP means
+sv["scalePar"]            <- b["negcost"]               # log-mean of the scale
+sv["sd_scalePar"]         <- abs(b["sd.negcost"])
+sv[paste0("sd_", pars)]   <- abs(b[paste0("sd.", pars)]) / lam
+
+anyNA(sv)   # should be FALSE; if TRUE, compare names(sv) with nm
+
+# needs a 0/1 outcome column and a sequential choice-occasion ID, with rows grouped by occasion
+```
+
+``` R
+{r}
+#| eval: false
+#test a few draws
+library(logitr)
+wtp_fit2 <- logitr(
+  data = wtp_data, outcome = "choice", obsID = "obsID", panelID = "respondentid",
+  pars = pars, scalePar = "cost",
+  randPars = setNames(rep("n", length(pars)), pars), randScale = "ln",
+  startVals = sv, numMultiStarts = 1,
+  drawType = "halton", numDraws = 500
+)
+summary(wtp_fit2)
+logLik(wtp_fit2) # paper: -10,758.264
+```
+
+## Latent Class Model
+
+``` R
+{r}
+#| eval: false
+library(gmnl)
+
+f_sel <- as.formula(paste("choice ~ cdum +", paste(attrs, collapse = " + "),
+                          "+ cost | 0 | 0 | 0 | 1"))
+
+fit_q <- lapply(2:6, function(q)
+  gmnl(f_sel, data = everglades_mlogit2, model = "lc", Q = q, panel = TRUE,
+       method = "bfgs", iterlim = 500))
+
+ic <- function(m, n = 2100) {
+  ll <- as.numeric(logLik(m)); k <- attr(logLik(m), "df")
+  c(LL = ll, k = k, BIC = -2*ll + k*log(n), CAIC = -2*ll + k*(log(n) + 1))
+}
+do.call(rbind, lapply(fit_q, ic))
+```
+
+``` R
+{r}
+#| eval: false
+covs <- c("female","black","other_race","hispanic","age","college",
+          "income","politics","nep","nocost","nogovt","nopay")
+
+f_lc <- as.formula(paste(
+  "choice ~ cdum +", paste(attrs, collapse = " + "), "+ cost | 0 | 0 | 0 |",
+  paste(covs, collapse = " + ")))
+
+lc4 <- gmnl(f_lc, data = everglades_mlogit2, model = "lc", Q = 4,
+            panel = TRUE, method = "bfgs", iterlim = 1000)
+summary(lc4)
+```

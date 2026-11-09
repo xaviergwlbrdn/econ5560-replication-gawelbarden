@@ -1,0 +1,112 @@
+---
+title: "everglades_NEP_correlations"
+format: html
+author: Elise Donaho
+editor: visual
+---
+
+## Install Libraries and Load in Data
+
+```{r, message=FALSE}
+library(tidyverse) #hi
+library(haven)
+library(knitr)
+library(psych)
+library(gt)
+
+everglades <- read_dta("LCM_4classes_data.dta")
+```
+
+```{r}
+# some of the scores are reverse coded so create a sign variable
+signs = c(1,-1,1,-1,1,-1,1,-1,1,-1,1,-1,1,-1,1)
+
+#summarize nep scores for each respondent so only 1 obs per respondent
+nep_data <- everglades |> 
+  group_by(respondentid) |> 
+  summarize(
+    nep1 = mean(nep1), #"mean" isnt really taking the mean of anything here
+    nep2 = mean(nep2), #just condensing the observations
+    nep3 = mean(nep3),
+    nep4 = mean(nep4),
+    nep5 = mean(nep5),
+    nep6 = mean(nep6),
+    nep7 = mean(nep7),
+    nep8 = mean(nep8),
+    nep9 = mean(nep9),
+    nep10 = mean(nep10),
+    nep11 = mean(nep11),
+    nep12 = mean(nep12),
+    nep13 = mean(nep13),
+    nep14 = mean(nep14),
+    nep15 = mean(nep15)
+  ) |> 
+  select(
+    !respondentid ) #get rid of respondentid column so no clashing with alpha
+
+nep_corr_table = nep_data |> psych::alpha(keys = signs)
+
+# Extract the item columns
+clean_summary <- nep_corr_table$item.stats[, c("raw.r", "r.drop")]
+
+# Add the overall raw.alpha as a column so it's all in one matrix
+clean_summary$overall_raw_alpha <- nep_corr_table$alpha.drop[, "raw_alpha"]
+```
+
+## Manually Compute the Average Interitem Covariance
+
+```{r}
+# Reverse-key the items yourself (assuming a 1-5 scale; adjust min/max if different)
+scale_min <- 1
+scale_max <- 5
+
+neg_items <- c("nep2", "nep4", "nep6", "nep8", "nep10", "nep12", "nep14")
+
+nep_keyed <- nep_data |>
+  mutate(across(all_of(neg_items), ~ (scale_max + scale_min) - .x))
+
+cov_mat <- cov(nep_keyed, use = "pairwise.complete.obs")
+
+# Mean off-diagonal covariance
+mean_offdiag <- function(m) mean(m[lower.tri(m)])
+
+# Overall (the "Test scale" row)
+overall_cov <- mean_offdiag(cov_mat)
+
+# Item-dropped version: for each item, drop it and average the remaining covariances
+avg_cov_drop <- sapply(colnames(cov_mat), function(item) {
+  mean_offdiag(cov_mat[colnames(cov_mat) != item, colnames(cov_mat) != item])
+})
+
+clean_summary$avg_interitem_cov <- avg_cov_drop
+```
+
+```{r}
+#clean up the table !
+clean_summary <- clean_summary |> 
+  rename(
+    "item-test correlation" = raw.r,
+    "item-rest correlation"= r.drop,
+    "alpha" = overall_raw_alpha,
+    "average interitem covariance" = avg_interitem_cov
+  ) |> 
+  mutate(
+    Obs. = 2100,
+    Sign = if_else(row_number() %% 2 != 0, "+", "-")
+  ) |> 
+  relocate(
+    alpha, .after = "average interitem covariance") |> 
+  relocate(
+    Sign, .before = "item-test correlation") |> 
+  relocate(
+    Obs., .before = Sign
+  ) |>  
+  mutate(across(where(is.numeric), round, digits = 3))
+```
+
+TADA !
+
+```{r}
+clean_summary |> 
+  gt()
+```
